@@ -4,13 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
+
 	"os"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/test-network-function/oct/internal/api/offlinecheck"
+	"github.com/test-network-function/oct/pkg/catalogs/helmcharts"
+	"github.com/test-network-function/oct/pkg/http"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,12 +21,12 @@ var (
 	containersCatalogPageURL = "https://catalog.redhat.com/api/containers/v1/images?filter=certified==true&page_size=%d&page=%d&include=data.repositories,data.docker_image_digest,data.architecture"
 	operatorsCatalogSizeURL  = "https://catalog.redhat.com/api/containers/v1/operators/bundles?filter=organization==certified-operators"
 	operatorsCatalogPageURL  = "https://catalog.redhat.com/api/containers/v1/operators/bundles?filter=organization==certified-operators&page_size=%d&page=%d"
-	helmCatalogURL           = "https://charts.openshift.io/index.yaml"
-	containersRelativePath   = "%s/cmd/tnf/fetch/data/containers/containers.db"
-	operatorsRelativePath    = "%s/cmd/tnf/fetch/data/operators/"
-	helmRelativePath         = "%s/cmd/tnf/fetch/data/helm/helm.db"
-	certifiedcatalogdata     = "%s/cmd/tnf/fetch/data/archive.json"
-	operatorFileFormat       = "operator_catalog_page_%d_%d.db"
+
+	containersRelativePath = "%s/cmd/tnf/fetch/data/containers/containers.db"
+	operatorsRelativePath  = "%s/cmd/tnf/fetch/data/operators/"
+
+	certifiedcatalogdata = "%s/cmd/tnf/fetch/data/archive.json"
+	operatorFileFormat   = "operator_catalog_page_%d_%d.db"
 )
 
 const (
@@ -86,7 +88,7 @@ func RunCommand(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	} else if b {
-		err = getHelmCatalog()
+		err = helmcharts.DownloadHelmCatalogs()
 		if err != nil {
 			log.Fatalf("fetching helm charts failed: %v", err)
 		}
@@ -95,22 +97,6 @@ func RunCommand(cmd *cobra.Command, args []string) error {
 	log.Info(data)
 	serializeData(data)
 	return nil
-}
-
-// getHTTPBody helper function to get binary data from URL
-func getHTTPBody(url string) ([]uint8, error) {
-	//nolint:gosec
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("http request %s failed with error: %w", url, err)
-	}
-
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading body from %s: %w, body: %s", url, err, string(body))
-	}
-	return body, nil
 }
 
 func getCertifiedCatalogOnDisk() CertifiedCatalog {
@@ -164,7 +150,7 @@ func serializeData(data CertifiedCatalog) {
 func getOperatorCatalogSize() (size, pagesize uint, err error) {
 	log.Infof("Getting operators catalog size, url: %s", operatorsCatalogSizeURL)
 
-	body, err := getHTTPBody(operatorsCatalogSizeURL)
+	body, err := http.GetHTTPBody(operatorsCatalogSizeURL)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -200,7 +186,7 @@ func getOperatorCatalogPage(page, size uint, isLastPage bool) error {
 
 	log.Infof("Getting operators catalog page %d, url: %s", page, url)
 
-	body, err := getHTTPBody(url)
+	body, err := http.GetHTTPBody(url)
 	if err != nil {
 		return err
 	}
@@ -268,7 +254,7 @@ func getContainerCatalogPage(page, size uint, db map[string]*offlinecheck.Contai
 	url := fmt.Sprintf(containersCatalogPageURL, size, page)
 	log.Infof("Getting containers catalog page %d, url: %s", page, url)
 
-	body, err := getHTTPBody(url)
+	body, err := http.GetHTTPBody(url)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get containers page %s: %w", url, err)
 	}
@@ -352,37 +338,6 @@ func getContainerCatalog(data *CertifiedCatalog) error {
 	return nil
 }
 
-func getHelmCatalog() error {
-	start := time.Now()
-	err := removeHelmDB()
-	if err != nil {
-		return err
-	}
-
-	log.Infof("Getting helm charts catalog page, url: %s", helmCatalogURL)
-	body, err := getHTTPBody(helmCatalogURL)
-	if err != nil {
-		return err
-	}
-
-	path, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get current directory: %w", err)
-	}
-	filename := fmt.Sprintf(helmRelativePath, path)
-	f, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("failed to open file %s: %w", filename, err)
-	}
-	_, err = f.Write(body)
-	if err != nil {
-		return fmt.Errorf("failed to write to file %s: %w", filename, err)
-	}
-
-	log.Info("Time to process all the charts: ", time.Since(start))
-	return nil
-}
-
 func removeContainersDB() error {
 	path, err := os.Getwd()
 	if err != nil {
@@ -397,20 +352,7 @@ func removeContainersDB() error {
 
 	return nil
 }
-func removeHelmDB() error {
-	path, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
-	}
 
-	filename := fmt.Sprintf(helmRelativePath, path)
-	err = os.Remove(filename)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove file %s: %w", filename, err)
-	}
-
-	return nil
-}
 func removeOperatorsDB() error {
 	path, err := os.Getwd()
 	if err != nil {
